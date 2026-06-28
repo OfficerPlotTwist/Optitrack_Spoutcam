@@ -9,20 +9,21 @@
 // host-level ownership of the cameras (CanConnectToDevices is false while any
 // Motive instance is running).
 //
-// API references (docs.optitrack.com, NaturalPoint forums):
+// Camera SDK 3.4.x API (verified against the installed headers):
 //   CameraManager::X().WaitForInitialization();
-//   Camera* cam = CameraManager::X().GetCamera();
-//   cam->SetVideoType(Core::GrayscaleMode);   // 8 bits/pixel
+//   std::shared_ptr<Camera> cam = CameraManager::X().GetCamera();
+//   cam->SetVideoType(Core::GrayscaleMode);          // enum eVideoMode, value 1
 //   cam->Start();
-//   Frame* f = cam->GetFrame();
-//   f->Rasterize(width, height, byteSpan, bitsPerPixel, buffer);
-//   f->Release();
+//   std::shared_ptr<const Frame> f = cam->LatestFrame();
+//   f->Rasterize(*cam, width, height, span, bitsPerPixel, buffer);   // Camera& first
+//   cam->Stop();                                     // no Frame/Camera Release(); shared_ptr frees
 #include "cameralibrary.h"
 #include "spout_grayscale_sender.h"
 
 #include <windows.h>
 #include <csignal>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 using namespace CameraLibrary;
@@ -35,7 +36,7 @@ int main() {
 
     CameraManager::X().WaitForInitialization();
 
-    Camera* camera = CameraManager::X().GetCamera();
+    std::shared_ptr<Camera> camera = CameraManager::X().GetCamera();
     if (!camera) {
         std::fprintf(stderr,
             "ERROR: No OptiTrack camera found. Is Motive running? It must be "
@@ -56,27 +57,28 @@ int main() {
     SpoutGrayscaleSender sender;
     if (!sender.init("OptiTrackCam")) {
         std::fprintf(stderr, "ERROR: Spout DirectX init failed.\n");
-        camera->Release();
+        camera->Stop();
         CameraManager::X().Shutdown();
         return 2;
     }
 
-    // 8-bit grayscale destination buffer; byteSpan = width (1 byte/pixel).
+    // 8-bit grayscale destination buffer; span = width (1 byte/pixel).
     std::vector<uint8_t> gray(size_t(w) * h);
 
     while (g_run) {
-        Frame* frame = camera->GetFrame();
+        std::shared_ptr<const Frame> frame = camera->LatestFrame();
         if (frame) {
-            frame->Rasterize(w, h, (unsigned)w, 8, gray.data());
+            frame->Rasterize(*camera, (unsigned)w, (unsigned)h, (unsigned)w, 8, gray.data());
             sender.sendGrayscale(gray.data(), (unsigned)w, (unsigned)h, (unsigned)w);
-            frame->Release();
+            // No explicit Release: the shared_ptr frees the frame.
         } else {
             Sleep(1); // no frame ready yet; avoid a busy spin
         }
     }
 
     sender.shutdown();
-    camera->Release();
+    camera->Stop();
+    camera.reset();
     CameraManager::X().Shutdown();
     std::printf("Stopped.\n");
     return 0;

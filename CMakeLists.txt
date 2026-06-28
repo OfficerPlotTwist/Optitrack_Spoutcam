@@ -56,18 +56,48 @@ endif()
 find_path(CAMERA_SDK_INCLUDE
     NAMES cameralibrary.h
     HINTS "${CAMERA_SDK_DIR}/include"
+          "C:/Program Files (x86)/OptiTrack/CameraSDK/include"
           "C:/Program Files/OptiTrack/Camera SDK/include")
 
-file(GLOB CAMERA_SDK_LIBS
-    "${CAMERA_SDK_DIR}/lib/CameraLibrary*x64*.lib"
-    "C:/Program Files/OptiTrack/Camera SDK/lib/CameraLibrary*x64*.lib")
+if(CAMERA_SDK_INCLUDE)
+    # lib/ sits alongside include/
+    get_filename_component(_sdk_root "${CAMERA_SDK_INCLUDE}" DIRECTORY)
+    set(_sdk_lib "${_sdk_root}/lib")
+    # DLL-based SDK: pick release (…x64S) and debug (…x64D) import libs.
+    file(GLOB _cam_lib_release "${_sdk_lib}/CameraLibrary*x64S.lib")
+    file(GLOB _cam_lib_debug   "${_sdk_lib}/CameraLibrary*x64D.lib")
+endif()
 
-if(CAMERA_SDK_INCLUDE AND CAMERA_SDK_LIBS)
-    message(STATUS "Camera SDK include: ${CAMERA_SDK_INCLUDE}")
-    message(STATUS "Camera SDK libs:    ${CAMERA_SDK_LIBS}")
+if(CAMERA_SDK_INCLUDE AND _cam_lib_release)
+    message(STATUS "Camera SDK include:    ${CAMERA_SDK_INCLUDE}")
+    message(STATUS "Camera SDK lib (rel):  ${_cam_lib_release}")
+    message(STATUS "Camera SDK lib (dbg):  ${_cam_lib_debug}")
+
     add_executable(optitrack_spout src/main_camera.cpp)
     target_include_directories(optitrack_spout PRIVATE "${CAMERA_SDK_INCLUDE}")
-    target_link_libraries(optitrack_spout PRIVATE spout_grayscale_sender ${CAMERA_SDK_LIBS})
+
+    # Link debug import lib in Debug, release otherwise (fall back to release).
+    if(_cam_lib_debug)
+        target_link_libraries(optitrack_spout PRIVATE spout_grayscale_sender
+            $<$<CONFIG:Debug>:${_cam_lib_debug}>
+            $<$<NOT:$<CONFIG:Debug>>:${_cam_lib_release}>)
+    else()
+        target_link_libraries(optitrack_spout PRIVATE spout_grayscale_sender ${_cam_lib_release})
+    endif()
+
+    # Copy the matching CameraLibrary DLL next to the exe (it is DLL-linked).
+    get_filename_component(_cam_dll_rel_name "${_cam_lib_release}" NAME_WE)
+    set(_cam_dll_release "${_sdk_lib}/${_cam_dll_rel_name}.dll")
+    set(_cam_dll_copy "${_cam_dll_release}")
+    if(_cam_lib_debug)
+        get_filename_component(_cam_dll_dbg_name "${_cam_lib_debug}" NAME_WE)
+        set(_cam_dll_debug "${_sdk_lib}/${_cam_dll_dbg_name}.dll")
+        set(_cam_dll_copy "$<IF:$<CONFIG:Debug>,${_cam_dll_debug},${_cam_dll_release}>")
+    endif()
+    add_custom_command(TARGET optitrack_spout POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_cam_dll_copy}" "$<TARGET_FILE_DIR:optitrack_spout>"
+        COMMENT "Copying CameraLibrary DLL next to optitrack_spout.exe")
 else()
     message(WARNING
         "Camera SDK not found — only 'spout_testpattern' will build. "
