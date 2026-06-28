@@ -72,6 +72,8 @@ build/Release/spout_testpattern.exe 640 480 OptiTrackCam
    build/Release/optitrack_spout.exe --serials 37390,36770 # only these serials
    build/Release/optitrack_spout.exe --serial 37390        # one (repeatable)
    build/Release/optitrack_spout.exe --name MyCam          # sender-name prefix
+   build/Release/optitrack_spout.exe --serials 37382,37386 --off-unused  # stream these, darken the rest
+   build/Release/optitrack_spout.exe --off                 # turn ALL cameras off (hold until Ctrl+C)
    ```
    Each camera is published as its own Spout sender `<prefix>_<id>` (default
    `OptiTrackCam_<id>`), where `<id>` is the camera's numeric ID — the same number
@@ -82,6 +84,17 @@ build/Release/spout_testpattern.exe 640 480 OptiTrackCam
 Each streaming camera also lights its **2-digit numeric LED display** with its ID
 (via `SetNumeric`), so you can match a physical camera to its sender. The displays
 turn off again when the app stops.
+
+### Turning cameras off
+
+- **`--off-unused`** (with a subset): the cameras you are *not* streaming have
+  their **IR illumination and ID display turned off** (`SetIntensity(0)` +
+  `SetNumeric(false)`), so they don't flood the volume with IR. They are *not*
+  `Stop()`ped — stopping a member of a synchronized Prime frame group perturbs the
+  cameras still streaming — and they are darkened **before** the streamers start.
+- **`--off`** (alone, or with `--serials`): turn off the targeted cameras (or all
+  attached) and **hold them dark until Ctrl+C**. The process must keep running to
+  hold the off state; cameras revert to default once released.
 
 ### Throughput note (grayscale vs MJPEG)
 

@@ -59,6 +59,15 @@ struct OpenCam {
     std::string name;
 };
 
+// Turn a camera dark WITHOUT removing it from the synchronized frame group:
+// kill its IR illumination (intensity 0) and its numeric display, but do NOT
+// Stop() it. Stopping a member of a synced Prime group perturbs the cameras that
+// are still streaming, so we leave it running but non-illuminating.
+static void darkenCamera(const std::shared_ptr<Camera>& cam) {
+    cam->SetNumeric(false, 0);
+    cam->SetIntensity(0);
+}
+
 static void parseSerials(const char* csv, std::set<unsigned int>& out) {
     std::string s(csv);
     size_t start = 0;
@@ -98,6 +107,8 @@ int main(int argc, char** argv) {
     signal(SIGINT, onSignal);
 
     bool listOnly = false;
+    bool offUnused = false;                  // darken cameras not being streamed
+    bool offMode = false;                    // turn off targeted cameras and hold
     std::set<unsigned int> wanted;          // empty => all cameras
     std::string prefix = "OptiTrackCam";
     std::string mode = "grayscale";         // "grayscale" or "mjpeg"
@@ -114,10 +125,14 @@ int main(int argc, char** argv) {
             prefix = argv[++i];
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             mode = argv[++i];
+        } else if (std::strcmp(argv[i], "--off-unused") == 0) {
+            offUnused = true;
+        } else if (std::strcmp(argv[i], "--off") == 0) {
+            offMode = true;
         } else {
             std::fprintf(stderr, "Unknown / incomplete argument: %s\n", argv[i]);
             std::fprintf(stderr, "Usage: optitrack_spout [--list] [--serials a,b] [--serial s] "
-                                 "[--name prefix] [--mode grayscale|mjpeg]\n");
+                                 "[--name prefix] [--mode grayscale|mjpeg] [--off-unused] [--off]\n");
             return 64;
         }
     }
@@ -147,6 +162,28 @@ int main(int argc, char** argv) {
         unsigned int s = e.Serial();
         if (!wanted.empty() && wanted.find(s) == wanted.end()) continue;
         serials.push_back(s);
+    }
+
+    // --off: turn off the targeted cameras (the --serial(s) set, or ALL attached
+    // if none given) and hold them dark until Ctrl+C. Cameras revert to default
+    // once released, so the process must keep running to hold them off.
+    if (offMode) {
+        std::vector<std::shared_ptr<Camera>> off;
+        for (unsigned int s : serials) {
+            std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(s);
+            if (cam) { darkenCamera(cam); off.push_back(cam); std::printf("OFF: serial %u\n", s); }
+        }
+        std::fflush(stdout);
+        if (off.empty()) {
+            std::fprintf(stderr, "No cameras to turn off.\n");
+            CameraManager::X().Shutdown();
+            return 1;
+        }
+        std::printf("%zu camera(s) held OFF. Ctrl+C to release.\n", off.size());
+        std::fflush(stdout);
+        while (g_run) Sleep(50);
+        CameraManager::X().Shutdown();
+        return 0;
     }
 
     // Open each camera (needed to read its hardware ID).
@@ -185,6 +222,25 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
         CameraManager::X().Shutdown();
         return 0;
+    }
+
+    // --off-unused: darken every attached camera we are NOT streaming, BEFORE
+    // starting the streamers. Touching cameras while others already stream
+    // perturbs the running ones (synced frame group), so do this first and let
+    // the streamers come up last. Held in offCams so they stay dark for the run.
+    std::vector<std::shared_ptr<Camera>> offCams;
+    if (offUnused) {
+        std::set<unsigned int> streaming(serials.begin(), serials.end());
+        for (int i = 0; i < available.Count(); ++i) {
+            CameraEntry& e = available[i];
+            if (e.IsVirtual()) continue;
+            unsigned int s = e.Serial();
+            if (streaming.count(s)) continue;  // will be streamed
+            std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(s);
+            if (cam) { darkenCamera(cam); offCams.push_back(cam); std::printf("OFF (unused): serial %u\n", s); }
+        }
+        if (!offCams.empty()) std::printf("Turned off %zu unused camera(s).\n", offCams.size());
+        std::fflush(stdout);
     }
 
     // Start each camera, light its ID display, and create its Spout sender.
