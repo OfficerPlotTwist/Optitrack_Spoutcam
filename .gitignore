@@ -1,0 +1,14 @@
+# Build output
+/build/
+/INSTALL/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.exp
+
+# Visual Studio / CMake noise
+.vs/
+CMakeUserPresets.json
+*.user
