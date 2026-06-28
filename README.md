@@ -6,8 +6,8 @@ receive the live camera image on the same Windows PC — with no SpoutCam /
 virtual-webcam hop.
 
 ```
-OptiTrack cameras ──► optitrack_spout.exe ──(Spout sender "OptiTrackCam")──► any Spout receiver
-                       Camera SDK + SpoutDX     GPU shared DX texture
+OptiTrack cameras ──► optitrack_spout.exe ──(Spout senders "OptiTrackCam_<serial>")──► any Spout receiver
+                       Camera SDK + SpoutDX     one GPU shared DX texture per camera
 ```
 
 See [DESIGN.md](DESIGN.md) for the full rationale (why Spout over SpoutCam/NDI,
@@ -61,11 +61,24 @@ build/Release/spout_testpattern.exe 640 480 OptiTrackCam
 **Real capture:**
 1. **Close Motive.** The Camera SDK takes exclusive, host-level ownership of the
    cameras — it cannot connect while any Motive instance is running.
-2. Run:
+2. List attached cameras (serial + model):
    ```powershell
-   build/Release/optitrack_spout.exe
+   build/Release/optitrack_spout.exe --list
    ```
-   It prints the camera name and resolution, then streams. Press `Ctrl+C` to stop.
+3. Stream:
+   ```powershell
+   build/Release/optitrack_spout.exe                       # all attached cameras
+   build/Release/optitrack_spout.exe --serials 37390,36770 # only these serials
+   build/Release/optitrack_spout.exe --serial 37390        # one (repeatable)
+   build/Release/optitrack_spout.exe --name MyCam          # sender-name prefix
+   ```
+   Each camera is published as its own Spout sender `<prefix>_<serial>` (default
+   `OptiTrackCam_<serial>`). Selection is **deterministic by serial number**, not
+   the arbitrary "first initialized" camera. Press `Ctrl+C` to stop.
+
+Each streaming camera also lights its **2-digit numeric LED display** with its
+hardware ID (via `SetNumeric`), so you can match a physical camera to its serial.
+The displays turn off again when the app stops.
 
 ## Receiving the Spout stream (any Spout app)
 
@@ -74,9 +87,9 @@ about it:
 
 | Property | Value |
 |----------|-------|
-| Sender name | `OptiTrackCam` |
+| Sender name | `OptiTrackCam_<serial>` — one sender per streaming camera (prefix configurable via `--name`) |
 | Pixel format | RGBA 8-bit (grayscale replicated to R=G=B, A=255) |
-| Resolution | adopts the camera's resolution automatically (e.g. 1280×837) |
+| Resolution | adopts each camera's resolution automatically (e.g. 1280×837, 1280×1024) |
 | Frame rate | the camera's grayscale frame rate |
 | Transport | GPU shared DirectX texture (same PC, zero-copy) |
 
@@ -88,8 +101,9 @@ plugins), and others. The general steps in any of them:
 1. Start `optitrack_spout.exe` (the sender must be running first, or the receiver
    will simply show black until it appears).
 2. In the receiver, add a **Spout receiver / Spout-In** input.
-3. Select the sender named **`OptiTrackCam`** from its sender list (some apps
-   auto-pick the only active sender; others need the name typed/selected).
+3. Select the sender for the camera you want — **`OptiTrackCam_<serial>`** — from
+   its sender list (some apps auto-pick the only active sender; others need the
+   name typed/selected). Run `optitrack_spout --list` to see the serials.
 4. The receiver adopts the resolution and shows the live grayscale image.
 
 If a receiver only accepts a **webcam** (not Spout), route the sender through the
@@ -116,8 +130,10 @@ DESIGN.md
 
 - Spout output (sender → Spout receiver): **built and verified end-to-end.**
 - `optitrack_spout` (real Camera SDK capture): **built against Camera SDK 3.4.1
-  and verified live** — a connected camera streamed a 1280×837 grayscale image to
-  a Spout receiver (dark field, bright highlights, as expected for an IR feed).
+  and verified live** — `--list` enumerated 7 cameras (Prime 17W / 13W); two
+  selected by serial streamed simultaneously as distinct senders
+  (`OptiTrackCam_37390` 1280×837, `OptiTrackCam_36770` 1280×1024) with their
+  numeric ID displays lit.
 
 ## Legal & licensing
 

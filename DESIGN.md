@@ -33,38 +33,46 @@ any Spout-capable application can consume it.
 
 ```
 OptiTrack cameras ── USB/PoE hub ──► optitrack_spout.exe   (owns cameras, no Motive)
-                                       CameraLibrary: SetVideoType(Core::GrayscaleMode)
-                                                      LatestFrame → Rasterize(*cam,w,h,w,8,buf)
-                                       SpoutDX:       SendImage(rgba, w, h)  name "OptiTrackCam"
-                                             │  GPU shared DX texture (same PC)
+                                       CameraList: enumerate; GetCameraBySerial(serial)
+                                       per camera: SetVideoType(GrayscaleMode); Start();
+                                                   SetNumeric(true, id)  // light ID display
+                                                   LatestFrame → Rasterize(*cam,w,h,w,8,buf)
+                                       SpoutDX:    SendImage(rgba,w,h)  name "OptiTrackCam_<serial>"
+                                             │  one GPU shared DX texture per camera (same PC)
                                              ▼
-                                       any Spout receiver (selects sender "OptiTrackCam")
+                                       any Spout receiver (selects "OptiTrackCam_<serial>")
 ```
 
-Two units, one interface: the named Spout sender `OptiTrackCam`. The sender half
-has no Camera SDK dependency, so it is verifiable on its own (see
+One Spout sender per camera; the sender name is the stable interface. The sender
+half has no Camera SDK dependency, so it is verifiable on its own (see
 `spout_testpattern`).
 
 ## Camera SDK API used (`main_camera.cpp`, verified against SDK 3.4.1 headers)
 
 ```cpp
 CameraManager::X().WaitForInitialization();
-std::shared_ptr<Camera> cam = CameraManager::X().GetCamera();   // null if Motive is running
+CameraList list;  // self-populates; list.Count(), list[i].Serial()/.Name()/.IsVirtual()
+std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(serial);  // deterministic
 cam->SetVideoType(Core::GrayscaleMode);                          // enum eVideoMode, value 1
 cam->Start();
+cam->SetNumeric(true, cam->CameraID());                          // light the 2-digit ID display
 int w = cam->Width(), h = cam->Height();
 std::shared_ptr<const Frame> f = cam->LatestFrame();
 f->Rasterize(*cam, w, h, /*span*/ w, /*bpp*/ 8, buffer);         // Camera& is the first arg
-cam->Stop();                                                     // no Release(); shared_ptr frees
+cam->Stop();                                                     // turns numeric off; shared_ptr frees
 ```
+
+Selecting by **serial** is deterministic; `GetCamera()` returns the arbitrary
+"first initialized" camera and is avoided.
 
 ## Receiving side (any Spout app)
 
-The output is a standard Spout sender; receiving is not specific to any one tool.
-Point a Spout receiver at the sender name **`OptiTrackCam`** (RGBA8, resolution =
-camera resolution, camera frame rate). The sender must be running before the
-receiver connects, or the receiver shows black until it appears. See the README
-"Receiving the Spout stream" section for the generic steps.
+The output is one standard Spout sender per camera; receiving is not specific to
+any one tool. Point a Spout receiver at the sender name
+**`OptiTrackCam_<serial>`** (RGBA8, resolution = that camera's resolution, camera
+frame rate). The sender must be running before the receiver connects, or the
+receiver shows black until it appears. See the README "Receiving the Spout
+stream" section for the generic steps.
 
 ## Known constraints
 
