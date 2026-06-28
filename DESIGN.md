@@ -34,13 +34,13 @@ any Spout-capable application can consume it.
 ```
 OptiTrack cameras ── USB/PoE hub ──► optitrack_spout.exe   (owns cameras, no Motive)
                                        CameraList: enumerate; GetCameraBySerial(serial)
-                                       per camera: SetVideoType(GrayscaleMode); Start();
+                                       per camera: SetVideoType(Grayscale|MJPEG); Start();
                                                    SetNumeric(true, id)  // light ID display
                                                    LatestFrame → Rasterize(*cam,w,h,w,8,buf)
-                                       SpoutDX:    SendImage(rgba,w,h)  name "OptiTrackCam_<serial>"
+                                       SpoutDX:    SendImage(rgba,w,h)  name "OptiTrackCam_<id>"
                                              │  one GPU shared DX texture per camera (same PC)
                                              ▼
-                                       any Spout receiver (selects "OptiTrackCam_<serial>")
+                                       any Spout receiver (selects "OptiTrackCam_<id>")
 ```
 
 One Spout sender per camera; the sender name is the stable interface. The sender
@@ -63,34 +63,42 @@ cam->Stop();                                                     // turns numeri
 ```
 
 Selecting by **serial** is deterministic; `GetCamera()` returns the arbitrary
-"first initialized" camera and is avoided.
+"first initialized" camera and is avoided. Each camera's **ID** (its hardware
+`CameraID()`, the number on its LED display) is used for the sender name and to
+order output ascending; if IDs are unassigned the app falls back to sequential
+1..N by serial.
 
 ## Receiving side (any Spout app)
 
 The output is one standard Spout sender per camera; receiving is not specific to
-any one tool. Point a Spout receiver at the sender name
-**`OptiTrackCam_<serial>`** (RGBA8, resolution = that camera's resolution, camera
-frame rate). The sender must be running before the receiver connects, or the
-receiver shows black until it appears. See the README "Receiving the Spout
-stream" section for the generic steps.
+any one tool. Point a Spout receiver at the sender name **`OptiTrackCam_<id>`**
+(RGBA8, resolution = that camera's frame resolution, camera frame rate). The
+sender must be running before the receiver connects, or the receiver shows black
+until it appears. See the README "Receiving the Spout stream" section.
 
 ## Known constraints
 
-- OptiTrack grayscale mode is *"not fully synchronized… lower frame rate"* —
-  irrelevant here: we read frames directly and show one video feed, not
-  reconstructing 3D.
-- Resolution is camera-model dependent (e.g. Prime-series 1.3/2 MP). A Spout
-  receiver adopts whatever resolution the sender publishes.
+- **Grayscale bandwidth.** Uncompressed grayscale is high-bandwidth; the camera
+  uplink saturates past a few cameras and the rest deliver no frames (their Spout
+  sender never registers). On a 7×Prime rig ~3 cameras sustain grayscale at once.
+  **`--mode mjpeg`** (on-camera compressed grayscale) is far lighter and streams
+  all cameras simultaneously (verified 7/7), at the cost of mild JPEG softening.
+- Grayscale/MJPEG modes are *"not fully synchronized… lower frame rate"* —
+  irrelevant here: we show video feeds, not reconstructing 3D.
+- Frame resolution is camera-model and mode dependent; a Spout receiver adopts
+  whatever resolution the sender publishes (e.g. 17W grayscale/MJPEG → 1280×837).
 
 ## Verification
 
 - **Spout output:** `spout_testpattern` → a Spout receiver. Confirmed 2026-06-28:
   the receiver adopted the sender's 640×480 and showed the expected animated
   gradient (R range 0.0–1.0, mean 0.507, std 0.292).
-- **Real camera capture:** confirmed 2026-06-28 with Camera SDK 3.4.1 — a
-  connected camera streamed a **1280×837** grayscale image to a Spout receiver
-  (mean 0.051 with peaks to 1.0: dark field with sparse bright highlights, as
-  expected for an OptiTrack IR feed).
+- **Real camera capture:** confirmed 2026-06-28 with Camera SDK 3.4.1 on a 7×Prime
+  rig (17W ×6, 13W ×1). `--list` enumerated all 7 in ascending ID order; in
+  `--mode mjpeg` **all 7 streamed simultaneously** as `OptiTrackCam_1`…`_7` with a
+  saved frame showing a clean, correctly-proportioned grayscale view of the mocap
+  volume. Plain `grayscale` mode capped at ~3 concurrent cameras (bandwidth), with
+  each camera verified working in isolation.
 
 ## Licensing note
 

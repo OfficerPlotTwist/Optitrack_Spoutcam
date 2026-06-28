@@ -2,33 +2,28 @@
 //
 // Captures raw 8-bit grayscale frames from one or more OptiTrack cameras via the
 // Camera SDK (CameraLibrary) and publishes EACH camera as its own Spout sender,
-// named "<prefix>_<serial>" (default prefix "OptiTrackCam"). Any Spout-capable
-// app can then receive whichever camera(s) it wants by sender name.
+// named "<prefix>_<id>" (default prefix "OptiTrackCam") where <id> is the
+// camera's numeric ID — the same number shown on its 2-digit LED display. Any
+// Spout-capable app receives a camera by that sender name.
 //
-// Camera selection is deterministic by serial number — not the arbitrary
-// "first initialized" camera that CameraManager::GetCamera() returns.
+// Cameras are listed and streamed in ASCENDING ID order. Selection is by serial
+// number (deterministic), not the arbitrary "first initialized" camera that
+// CameraManager::GetCamera() returns.
 //
 // Usage:
 //   optitrack_spout                       Stream ALL attached cameras.
-//   optitrack_spout --list                List attached cameras (serial/name) and exit.
-//   optitrack_spout --serials 11001,11002 Stream only these serials.
-//   optitrack_spout --serial 11001        Stream only this serial (repeatable).
+//   optitrack_spout --list                List attached cameras (ID/serial/name) and exit.
+//   optitrack_spout --serials 37390,36770 Stream only these serials.
+//   optitrack_spout --serial 37390        Stream only this serial (repeatable).
 //   optitrack_spout --name MyCam          Sender name prefix (default "OptiTrackCam").
 //
 // Motive must be CLOSED: the Camera SDK takes exclusive, host-level ownership of
 // the cameras (CanConnectToDevices is false while any Motive instance is running).
-//
-// Camera SDK 3.4.x API (verified against the installed headers):
-//   CameraManager::X().WaitForInitialization();
-//   CameraList list;  list.Count();  list[i].Serial()/.Name()/.IsVirtual();
-//   std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(serial);
-//   cam->SetVideoType(Core::GrayscaleMode);  cam->Start();
-//   std::shared_ptr<const Frame> f = cam->LatestFrame();
-//   f->Rasterize(*cam, w, h, span, bpp, buffer);  cam->Stop();
 #include "cameralibrary.h"
 #include "spout_grayscale_sender.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -50,9 +45,20 @@ struct CamStream {
     int w = 0;
     int h = 0;
     unsigned int serial = 0;
+    int id = 0;
 };
 
-// Parse a comma-separated list of unsigned serials into `out`.
+// One opened camera, before sender creation.
+struct OpenCam {
+    std::shared_ptr<Camera> cam;
+    unsigned int serial = 0;
+    int rawId = 0;      // hardware ID if valid, else 0
+    int id = 0;         // resolved display/sender ID (ascending, unique)
+    int w = 0;
+    int h = 0;
+    std::string name;
+};
+
 static void parseSerials(const char* csv, std::set<unsigned int>& out) {
     std::string s(csv);
     size_t start = 0;
@@ -68,12 +74,33 @@ static void parseSerials(const char* csv, std::set<unsigned int>& out) {
     }
 }
 
+// Resolve display IDs: use the cameras' hardware IDs when they are all valid and
+// unique; otherwise fall back to sequential 1..N by ascending serial.
+static void resolveIds(std::vector<OpenCam>& cams) {
+    bool faithful = true;
+    std::set<int> seen;
+    for (auto& c : cams) {
+        if (c.rawId <= 0 || seen.count(c.rawId)) { faithful = false; break; }
+        seen.insert(c.rawId);
+    }
+    if (faithful) {
+        for (auto& c : cams) c.id = c.rawId;
+    } else {
+        std::sort(cams.begin(), cams.end(),
+                  [](const OpenCam& a, const OpenCam& b) { return a.serial < b.serial; });
+        for (size_t i = 0; i < cams.size(); ++i) cams[i].id = int(i + 1);
+    }
+    std::sort(cams.begin(), cams.end(),
+              [](const OpenCam& a, const OpenCam& b) { return a.id < b.id; });
+}
+
 int main(int argc, char** argv) {
     signal(SIGINT, onSignal);
 
     bool listOnly = false;
     std::set<unsigned int> wanted;          // empty => all cameras
     std::string prefix = "OptiTrackCam";
+    std::string mode = "grayscale";         // "grayscale" or "mjpeg"
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--list") == 0) {
@@ -85,12 +112,21 @@ int main(int argc, char** argv) {
             if (v != 0) wanted.insert(v);
         } else if (std::strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
             prefix = argv[++i];
+        } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
+            mode = argv[++i];
         } else {
             std::fprintf(stderr, "Unknown / incomplete argument: %s\n", argv[i]);
-            std::fprintf(stderr, "Usage: optitrack_spout [--list] [--serials a,b] [--serial s] [--name prefix]\n");
+            std::fprintf(stderr, "Usage: optitrack_spout [--list] [--serials a,b] [--serial s] "
+                                 "[--name prefix] [--mode grayscale|mjpeg]\n");
             return 64;
         }
     }
+
+    // MJPEG is on-camera compressed grayscale: far lower uplink bandwidth, so many
+    // more cameras can stream at once (grayscale saturates the uplink past a few
+    // cameras). Rasterize decodes MJPEG to the same 8-bit grayscale buffer.
+    const Core::eVideoMode videoMode =
+        (mode == "mjpeg" || mode == "MJPEG") ? Core::MJPEGMode : Core::GrayscaleMode;
 
     CameraManager::X().WaitForInitialization();
 
@@ -103,65 +139,94 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (listOnly) {
-        std::printf("Attached OptiTrack cameras (%d):\n", available.Count());
-        for (int i = 0; i < available.Count(); ++i) {
-            CameraEntry& e = available[i];
-            std::printf("  serial %-10u  %-20s%s\n",
-                        e.Serial(), e.Name(), e.IsVirtual() ? "  (virtual)" : "");
-        }
-        CameraManager::X().Shutdown();
-        return 0;
-    }
-
-    // Open the selected cameras (all attached, unless --serial(s) narrowed it).
-    std::vector<std::unique_ptr<CamStream>> streams;
+    // Collect the serials we will open (skip virtual; apply --serial filter).
+    std::vector<unsigned int> serials;
     for (int i = 0; i < available.Count(); ++i) {
         CameraEntry& e = available[i];
         if (e.IsVirtual()) continue;
-        const unsigned int serial = e.Serial();
-        if (!wanted.empty() && wanted.find(serial) == wanted.end()) continue;
-
-        std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(serial);
-        if (!cam) {
-            std::fprintf(stderr, "WARN: could not open camera serial %u; skipping.\n", serial);
-            continue;
-        }
-
-        cam->SetVideoType(Core::GrayscaleMode);
-        cam->Start();
-
-        // Light up the camera's 2-digit numeric LED display with its hardware
-        // ID (falls back to enumeration order if no ID is assigned).
-        const int idVal = cam->CameraIDValid() ? cam->CameraID() : (i + 1);
-        cam->SetNumeric(true, idVal);
-
-        auto cs = std::make_unique<CamStream>();
-        cs->cam = cam;
-        cs->serial = serial;
-        cs->w = cam->Width();
-        cs->h = cam->Height();
-        cs->gray.assign(size_t(cs->w) * cs->h, 0);
-
-        const std::string name = prefix + "_" + std::to_string(serial);
-        if (!cs->sender.init(name)) {
-            std::fprintf(stderr, "WARN: Spout init failed for %s; skipping.\n", name.c_str());
-            cam->Stop();
-            continue;
-        }
-
-        std::printf("Camera '%s' serial %u  ID %d  %dx%d  -> Spout '%s'\n",
-                    cam->Name(), serial, idVal, cs->w, cs->h, name.c_str());
-        streams.push_back(std::move(cs));
+        unsigned int s = e.Serial();
+        if (!wanted.empty() && wanted.find(s) == wanted.end()) continue;
+        serials.push_back(s);
     }
 
-    if (streams.empty()) {
+    // Open each camera (needed to read its hardware ID).
+    std::vector<OpenCam> opened;
+    for (unsigned int s : serials) {
+        std::shared_ptr<Camera> cam = CameraManager::X().GetCameraBySerial(s);
+        if (!cam) {
+            std::fprintf(stderr, "WARN: could not open camera serial %u; skipping.\n", s);
+            continue;
+        }
+        OpenCam oc;
+        oc.cam = cam;
+        oc.serial = s;
+        oc.rawId = cam->CameraIDValid() ? cam->CameraID() : 0;
+        oc.w = cam->Width();
+        oc.h = cam->Height();
+        oc.name = cam->Name() ? cam->Name() : "";
+        opened.push_back(std::move(oc));
+    }
+
+    if (opened.empty()) {
         std::fprintf(stderr, "ERROR: no cameras opened (check --serial filter against --list).\n");
         CameraManager::X().Shutdown();
         return 1;
     }
 
-    std::printf("Streaming %zu camera(s). Ctrl+C to stop.\n", streams.size());
+    resolveIds(opened);  // assigns ascending, unique .id and sorts by it
+
+    if (listOnly) {
+        std::printf("Attached OptiTrack cameras (%zu), ascending ID:\n", opened.size());
+        std::printf("  %-4s %-10s %-20s %s\n", "ID", "serial", "model", "sender name");
+        for (auto& c : opened) {
+            std::printf("  %-4d %-10u %-20s %s_%d\n",
+                        c.id, c.serial, c.name.c_str(), prefix.c_str(), c.id);
+        }
+        std::fflush(stdout);
+        CameraManager::X().Shutdown();
+        return 0;
+    }
+
+    // Start each camera, light its ID display, and create its Spout sender.
+    std::vector<std::unique_ptr<CamStream>> streams;
+    for (auto& o : opened) {
+        o.cam->SetVideoType(videoMode);
+        o.cam->Start();
+        o.cam->SetNumeric(true, o.id);  // light the 2-digit LED with the same ID
+
+        // Read dimensions AFTER the video mode is applied — the grayscale/MJPEG
+        // frame size can differ from the camera's native sensor resolution.
+        const int fw = o.cam->Width();
+        const int fh = o.cam->Height();
+
+        auto cs = std::make_unique<CamStream>();
+        cs->cam = o.cam;
+        cs->serial = o.serial;
+        cs->id = o.id;
+        cs->w = fw;
+        cs->h = fh;
+        cs->gray.assign(size_t(fw) * fh, 0);
+
+        const std::string name = prefix + "_" + std::to_string(o.id);
+        if (!cs->sender.init(name)) {
+            std::fprintf(stderr, "WARN: Spout init failed for %s; skipping.\n", name.c_str());
+            o.cam->Stop();
+            continue;
+        }
+
+        std::printf("ID %-3d serial %-10u %-18s %dx%d  -> Spout '%s'\n",
+                    o.id, o.serial, o.name.c_str(), fw, fh, name.c_str());
+        streams.push_back(std::move(cs));
+    }
+
+    if (streams.empty()) {
+        std::fprintf(stderr, "ERROR: no cameras streaming.\n");
+        CameraManager::X().Shutdown();
+        return 1;
+    }
+
+    std::printf("Streaming %zu camera(s) in ascending ID order. Ctrl+C to stop.\n", streams.size());
+    std::fflush(stdout);
 
     while (g_run) {
         bool any = false;

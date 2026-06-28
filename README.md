@@ -6,7 +6,7 @@ receive the live camera image on the same Windows PC — with no SpoutCam /
 virtual-webcam hop.
 
 ```
-OptiTrack cameras ──► optitrack_spout.exe ──(Spout senders "OptiTrackCam_<serial>")──► any Spout receiver
+OptiTrack cameras ──► optitrack_spout.exe ──(Spout senders "OptiTrackCam_<id>")──► any Spout receiver
                        Camera SDK + SpoutDX     one GPU shared DX texture per camera
 ```
 
@@ -67,18 +67,34 @@ build/Release/spout_testpattern.exe 640 480 OptiTrackCam
    ```
 3. Stream:
    ```powershell
-   build/Release/optitrack_spout.exe                       # all attached cameras
+   build/Release/optitrack_spout.exe                       # all attached cameras (grayscale)
+   build/Release/optitrack_spout.exe --mode mjpeg          # all cameras, MJPEG (see throughput note)
    build/Release/optitrack_spout.exe --serials 37390,36770 # only these serials
    build/Release/optitrack_spout.exe --serial 37390        # one (repeatable)
    build/Release/optitrack_spout.exe --name MyCam          # sender-name prefix
    ```
-   Each camera is published as its own Spout sender `<prefix>_<serial>` (default
-   `OptiTrackCam_<serial>`). Selection is **deterministic by serial number**, not
-   the arbitrary "first initialized" camera. Press `Ctrl+C` to stop.
+   Each camera is published as its own Spout sender `<prefix>_<id>` (default
+   `OptiTrackCam_<id>`), where `<id>` is the camera's numeric ID — the same number
+   shown on its LED display. Cameras are listed and streamed in **ascending ID
+   order**; selection is **deterministic by serial number**, not the arbitrary
+   "first initialized" camera. Press `Ctrl+C` to stop.
 
-Each streaming camera also lights its **2-digit numeric LED display** with its
-hardware ID (via `SetNumeric`), so you can match a physical camera to its serial.
-The displays turn off again when the app stops.
+Each streaming camera also lights its **2-digit numeric LED display** with its ID
+(via `SetNumeric`), so you can match a physical camera to its sender. The displays
+turn off again when the app stops.
+
+### Throughput note (grayscale vs MJPEG)
+
+`grayscale` mode is **uncompressed and high-bandwidth** — the camera uplink
+saturates past a few cameras, and additional cameras simply deliver no frames
+(their Spout sender never appears; a receiver shows black / the placeholder). On a
+7×Prime rig only ~3 cameras sustain grayscale at once.
+
+`--mode mjpeg` uses the cameras' **on-camera compressed grayscale** stream — far
+lower bandwidth, so **all cameras stream simultaneously** (verified 7/7). The
+image is JPEG-compressed (slightly softer) but otherwise the same grayscale view.
+Use `mjpeg` when you need many cameras at once; use `grayscale` for a few cameras
+at maximum fidelity.
 
 ## Receiving the Spout stream (any Spout app)
 
@@ -87,7 +103,7 @@ about it:
 
 | Property | Value |
 |----------|-------|
-| Sender name | `OptiTrackCam_<serial>` — one sender per streaming camera (prefix configurable via `--name`) |
+| Sender name | `OptiTrackCam_<id>` — one sender per camera, `<id>` = camera ID on its LED display (prefix via `--name`) |
 | Pixel format | RGBA 8-bit (grayscale replicated to R=G=B, A=255) |
 | Resolution | adopts each camera's resolution automatically (e.g. 1280×837, 1280×1024) |
 | Frame rate | the camera's grayscale frame rate |
@@ -101,9 +117,9 @@ plugins), and others. The general steps in any of them:
 1. Start `optitrack_spout.exe` (the sender must be running first, or the receiver
    will simply show black until it appears).
 2. In the receiver, add a **Spout receiver / Spout-In** input.
-3. Select the sender for the camera you want — **`OptiTrackCam_<serial>`** — from
-   its sender list (some apps auto-pick the only active sender; others need the
-   name typed/selected). Run `optitrack_spout --list` to see the serials.
+3. Select the sender for the camera you want — **`OptiTrackCam_<id>`** — from its
+   sender list (some apps auto-pick the only active sender; others need the name
+   typed/selected). Run `optitrack_spout --list` to see the ID→serial map.
 4. The receiver adopts the resolution and shows the live grayscale image.
 
 If a receiver only accepts a **webcam** (not Spout), route the sender through the
@@ -130,10 +146,10 @@ DESIGN.md
 
 - Spout output (sender → Spout receiver): **built and verified end-to-end.**
 - `optitrack_spout` (real Camera SDK capture): **built against Camera SDK 3.4.1
-  and verified live** — `--list` enumerated 7 cameras (Prime 17W / 13W); two
-  selected by serial streamed simultaneously as distinct senders
-  (`OptiTrackCam_37390` 1280×837, `OptiTrackCam_36770` 1280×1024) with their
-  numeric ID displays lit.
+  and verified live** — `--list` enumerated 7 cameras (Prime 17W / 13W) in
+  ascending ID order; in `--mode mjpeg` **all 7 streamed simultaneously** as
+  distinct senders `OptiTrackCam_1`…`OptiTrackCam_7` (clean grayscale views,
+  numeric ID displays lit). In `grayscale` mode bandwidth caps at ~3 concurrent.
 
 ## Legal & licensing
 
