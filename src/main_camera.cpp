@@ -194,10 +194,14 @@ int main(int argc, char** argv) {
         o.cam->Start();
         o.cam->SetNumeric(true, o.id);  // light the 2-digit LED with the same ID
 
-        // Read dimensions AFTER the video mode is applied — the grayscale/MJPEG
-        // frame size can differ from the camera's native sensor resolution.
-        const int fw = o.cam->Width();
-        const int fh = o.cam->Height();
+        // The grayscale/MJPEG reference frame is decimated — smaller than the
+        // native sensor — so size the buffer/texture from the per-mode FrameSize,
+        // NOT Width()/Height(), or the image lands in the top-left of an oversized
+        // texture (the rest black).
+        int fw = 0, fh = 0;
+        float frameScale = 1.0f;
+        o.cam->FrameSize(videoMode, fw, fh, frameScale);
+        if (fw <= 0 || fh <= 0) { fw = o.cam->Width(); fh = o.cam->Height(); }
 
         auto cs = std::make_unique<CamStream>();
         cs->cam = o.cam;

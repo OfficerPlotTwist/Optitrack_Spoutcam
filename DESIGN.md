@@ -85,8 +85,12 @@ until it appears. See the README "Receiving the Spout stream" section.
   all cameras simultaneously (verified 7/7), at the cost of mild JPEG softening.
 - Grayscale/MJPEG modes are *"not fully synchronized… lower frame rate"* —
   irrelevant here: we show video feeds, not reconstructing 3D.
-- Frame resolution is camera-model and mode dependent; a Spout receiver adopts
-  whatever resolution the sender publishes (e.g. 17W grayscale/MJPEG → 1280×837).
+- The grayscale/MJPEG reference frame is **decimated** below the native sensor
+  resolution, and the decimation differs per mode (e.g. 17W: grayscale ≈ 1280×837,
+  MJPEG ≈ 832×544). Size the buffer/texture from `Camera::FrameSize(mode, w, h,
+  scale)`, NOT `Width()/Height()`, or the image lands in the top-left of an
+  oversized texture. A Spout receiver adopts whatever resolution the sender
+  publishes.
 
 ## Verification
 
